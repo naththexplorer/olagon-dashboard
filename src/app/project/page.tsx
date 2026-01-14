@@ -83,6 +83,34 @@ export default function ProjectPage() {
     p.penanggungJawab.includes(selectedPerson as any)
   );
 
+  // Helper function untuk status color
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'Selesai':
+        return 'bg-green-100 text-green-700';
+      case 'Sedang dikerjakan':
+        return 'bg-blue-100 text-blue-700';
+      case 'Belum mulai':
+        return 'bg-slate-100 text-slate-700';
+      default:
+        return 'bg-slate-100 text-slate-700';
+    }
+  };
+
+  // Helper function untuk priority color
+  const getPriorityColor = (prioritas: string) => {
+    switch (prioritas) {
+      case 'Tinggi':
+        return 'bg-red-100 text-red-700';
+      case 'Sedang':
+        return 'bg-yellow-100 text-yellow-700';
+      case 'Rendah':
+        return 'bg-slate-100 text-slate-700';
+      default:
+        return 'bg-slate-100 text-slate-700';
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -134,27 +162,11 @@ export default function ProjectPage() {
                   )}
 
                   <div className="flex items-center gap-3 flex-wrap">
-                    <span
-                      className={`px-4 py-2 rounded-full font-medium ${
-                        project.status === 'Selesai'
-                          ? 'bg-green-100 text-green-700'
-                          : project.status === 'Sedang dikerjakan'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-slate-100 text-slate-700'
-                      }`}
-                    >
+                    <span className={`px-4 py-2 rounded-full font-medium ${getStatusColor(project.status)}`}>
                       {project.status}
                     </span>
 
-                    <span
-                      className={`px-4 py-2 rounded-full font-medium ${
-                        project.prioritas === 'Tinggi'
-                          ? 'bg-red-100 text-red-700'
-                          : project.prioritas === 'Sedang'
-                          ? 'bg-yellow-100 text-yellow-700'
-                          : 'bg-slate-100 text-slate-700'
-                      }`}
-                    >
+                    <span className={`px-4 py-2 rounded-full font-medium ${getPriorityColor(project.prioritas)}`}>
                       {project.prioritas}
                     </span>
 

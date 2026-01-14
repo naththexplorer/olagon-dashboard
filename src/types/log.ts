@@ -2,10 +2,13 @@ export type AksiLog = 'Tambah' | 'Edit' | 'Hapus' | 'Tarik';
 
 export type ObjekLog = 
   | 'Project' 
-  | 'Transaksi' 
   | 'Progress' 
+  | 'Transaksi' 
   | 'Saldo' 
-  | 'Saldo Personal';
+  | 'Saldo Personal'
+  | 'Pemasukan'      // ✅ TAMBAH INI
+  | 'Operasional'    // ✅ TAMBAH INI
+  | 'Settings';      // ✅ TAMBAH INI
 
 export interface Log {
   id: string;

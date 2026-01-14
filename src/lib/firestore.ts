@@ -9,15 +9,28 @@ import {
   setDoc,
   query,
   orderBy,
+  where,
+  writeBatch,
   Timestamp,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, storage } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+
 import type { Project, ProjectInput } from '../types/project';
-import type { Transaksi, TransaksiInput } from '../types/saldo';
 import type { Log, AksiLog, ObjekLog } from '../types/log';
 import type { Progress, ProgressInput } from '../types/progress';
-import { storage } from './firebase';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import type { 
+  Pemasukan,
+  PemasukanInput,
+  Operasional,
+  OperasionalInput,
+  SaldoPersonal,
+  RiwayatPenarikan,
+  NamaEksekutif,
+  PembagianOtomatis,
+  DanaDarurat,
+  DanaTabungan,
+} from '../types/saldo';
 
 // Upload gambar ke Firebase Storage
 export const uploadProgressImage = async (file: File, progressId: string): Promise<string> => {
@@ -41,11 +54,18 @@ const toDate = (timestamp: any): Date => {
   return new Date();
 };
 
-// Filter undefined values dari object
 const removeUndefined = (obj: any): any => {
   return Object.fromEntries(
     Object.entries(obj).filter(([_, value]) => value !== undefined)
   );
+};
+
+const formatRupiah = (amount: number): string => {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    minimumFractionDigits: 0,
+  }).format(amount);
 };
 
 // ============================================
@@ -136,195 +156,6 @@ export const getAllProjects = async (): Promise<Project[]> => {
 };
 
 // ============================================
-// TRANSAKSI & SALDO OPERATIONS
-// ============================================
-
-export const createTransaksi = async (input: TransaksiInput): Promise<string> => {
-  const nominal = input.nominal;
-  
-  // Hitung pembagian otomatis
-  const pembagian = {
-    operasional: Math.floor(nominal * 0.4),
-    cadangan: Math.floor(nominal * 0.1),
-    liburan: Math.floor(nominal * 0.1),
-    gajiEksekutif: Math.floor(nominal * 0.3),
-  };
-
-  // Hitung gaji per orang
-  const perOrang = Math.floor(pembagian.gajiEksekutif / 4);
-  const gajiPerOrang = {
-    firdaus: perOrang,
-    faza: perOrang,
-    rafah: perOrang,
-    haikal: perOrang,
-  };
-
-  // Simpan transaksi
-  const transaksiData = removeUndefined({
-    jasaId: input.jasaId,
-    jasaNama: input.jasaNama,
-    nominal: input.nominal,
-    catatan: input.catatan,
-    pembagian,
-    gajiPerOrang,
-    createdAt: Timestamp.now(),
-  });
-
-  const docRef = await addDoc(collection(db, 'transaksi'), transaksiData);
-
-  // Update saldo kategori dengan ID yang konsisten
-  await updateSaldoKategori('operasional', 'Operasional', pembagian.operasional);
-  await updateSaldoKategori('cadangan', 'Cadangan', pembagian.cadangan);
-  await updateSaldoKategori('liburan', 'Liburan', pembagian.liburan);
-  await updateSaldoKategori('gaji_eksekutif', 'Gaji Eksekutif', pembagian.gajiEksekutif);
-
-  // Update saldo personal
-  await updateSaldoPersonal('firdaus', 'Firdaus', gajiPerOrang.firdaus);
-  await updateSaldoPersonal('faza', 'Faza', gajiPerOrang.faza);
-  await updateSaldoPersonal('rafah', 'Rafah', gajiPerOrang.rafah);
-  await updateSaldoPersonal('haikal', 'Haikal', gajiPerOrang.haikal);
-
-  await createLog('Tambah', 'Transaksi', docRef.id, `Pemasukan ${formatRupiah(nominal)} dari ${input.jasaNama}`);
-  
-  return docRef.id;
-};
-
-const formatRupiah = (amount: number): string => {
-  return new Intl.NumberFormat('id-ID', {
-    style: 'currency',
-    currency: 'IDR',
-    minimumFractionDigits: 0,
-  }).format(amount);
-};
-
-// Helper: Update saldo kategori dengan setDoc (bukan addDoc)
-const updateSaldoKategori = async (
-  docId: string,
-  kategori: string,
-  tambahan: number
-): Promise<void> => {
-  const docRef = doc(db, 'saldo', docId);
-  const docSnap = await getDoc(docRef);
-
-  if (docSnap.exists()) {
-    const currentJumlah = docSnap.data().jumlah || 0;
-    await updateDoc(docRef, {
-      jumlah: currentJumlah + tambahan,
-      updatedAt: Timestamp.now(),
-    });
-  } else {
-    // Buat document dengan ID spesifik
-    await setDoc(docRef, {
-      kategori,
-      jumlah: tambahan,
-      updatedAt: Timestamp.now(),
-    });
-  }
-};
-
-// Helper: Update saldo personal dengan setDoc
-const updateSaldoPersonal = async (
-  docId: string,
-  nama: string,
-  tambahan: number
-): Promise<void> => {
-  const docRef = doc(db, 'saldo_personal', docId);
-  const docSnap = await getDoc(docRef);
-
-  if (docSnap.exists()) {
-    const currentJumlah = docSnap.data().jumlah || 0;
-    await updateDoc(docRef, {
-      jumlah: currentJumlah + tambahan,
-      updatedAt: Timestamp.now(),
-    });
-  } else {
-    // Buat document dengan ID spesifik
-    await setDoc(docRef, {
-      nama,
-      jumlah: tambahan,
-      updatedAt: Timestamp.now(),
-    });
-  }
-};
-
-// Tarik saldo personal
-export const tarikSaldoPersonal = async (
-  nama: string,
-  nominal: number,
-  catatan?: string
-): Promise<void> => {
-  // Cari document saldo personal
-  const q = query(collection(db, 'saldo_personal'));
-  const snapshot = await getDocs(q);
-  const docSnap = snapshot.docs.find(d => d.data().nama === nama);
-
-  if (!docSnap) {
-    throw new Error('Saldo personal tidak ditemukan');
-  }
-
-  const currentJumlah = docSnap.data().jumlah || 0;
-
-  if (currentJumlah < nominal) {
-    throw new Error('Saldo tidak mencukupi');
-  }
-
-  const docId = docSnap.id; // ← Simpan ID dulu
-
-  // Update saldo
-  await updateDoc(doc(db, 'saldo_personal', docId), {
-    jumlah: currentJumlah - nominal,
-    updatedAt: Timestamp.now(),
-  });
-
-  // Simpan log penarikan
-  await addDoc(collection(db, 'penarikan'), {
-    nama,
-    nominal,
-    catatan: catatan || '',
-    createdAt: Timestamp.now(),
-  });
-
-  // Fix: Pakai docId yang sudah disimpan
-  await createLog('Tarik', 'Saldo Personal', docId, `${nama} menarik ${formatRupiah(nominal)}`);
-};
-
-// Tambahkan di bagian SALDO OPERATIONS (setelah createPemasukan)
-export const tarikSaldo = async (anggota: string, jumlah: number): Promise<void> => {
-  // ❌ SALAH: const saldoPersonalRef = doc(db, 'saldoPersonal', anggota);
-  
-  // ✅ BENAR: Sesuaikan dengan collection yang kamu pakai
-  const saldoPersonalRef = doc(db, 'saldo_personal', anggota.toLowerCase());
-  const saldoDoc = await getDoc(saldoPersonalRef);
-
-  if (!saldoDoc.exists()) {
-    throw new Error(`Saldo ${anggota} tidak ditemukan`);
-  }
-
-  const currentSaldo = saldoDoc.data().jumlah || 0;
-
-  if (jumlah > currentSaldo) {
-    throw new Error(
-      `Saldo ${anggota} tidak mencukupi. Saldo saat ini: Rp ${currentSaldo.toLocaleString('id-ID')}`
-    );
-  }
-
-  const newSaldo = currentSaldo - jumlah;
-
-  await updateDoc(saldoPersonalRef, {
-    jumlah: newSaldo,
-    updatedAt: Timestamp.now(),
-  });
-
-  await createLog(
-    'Tarik',
-    'Saldo',
-    anggota,
-    `${anggota} menarik Rp ${jumlah.toLocaleString('id-ID')}`
-  );
-};
-
-
-// ============================================
 // PROGRESS OPERATIONS
 // ============================================
 
@@ -356,11 +187,387 @@ export const updateProgress = async (id: string, input: Partial<ProgressInput>):
   await createLog('Edit', 'Progress', id, `Mengubah progress`);
 };
 
-// 🔥 TAMBAHKAN INI:
 export const deleteProgress = async (id: string): Promise<void> => {
   await deleteDoc(doc(db, 'progress', id));
   await createLog('Hapus', 'Progress', id, `Menghapus progress`);
 };
+
+// ============================================
+// FUNGSI PEMBAGIAN OTOMATIS (BARU)
+// ============================================
+
+export function hitungPembagian(pemasukan: number, operasional: number): PembagianOtomatis {
+  const sisa = pemasukan - operasional;
+  const gajiEksekutif = Math.floor(sisa * 0.4);
+  const gajiPerOrang = Math.floor(gajiEksekutif / 4);
+  const danaDarurat = Math.floor(sisa * 0.3);
+  const danaTabungan = Math.floor(sisa * 0.3);
+
+  return {
+    sisaSetelahOperasional: sisa,
+    gajiEksekutif,
+    gajiPerOrang,
+    danaDarurat,
+    danaTabungan,
+  };
+}
+
+// ============================================
+// PEMASUKAN + DISTRIBUSI OTOMATIS (UPDATED)
+// ============================================
+
+export const createPemasukanWithDistribution = async (data: PemasukanInput): Promise<string> => {
+  // 1. Hitung total operasional bulan ini
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  
+  const operasionalSnap = await getDocs(
+    query(
+      collection(db, 'operasional'),
+      where('tanggal', '>=', Timestamp.fromDate(startOfMonth)),
+      where('tanggal', '<=', Timestamp.fromDate(endOfMonth))
+    )
+  );
+  
+  const totalOperasional = operasionalSnap.docs.reduce(
+    (sum, doc) => sum + doc.data().jumlah,
+    0
+  );
+
+  // 2. CEK: Operasional harus sudah ada
+  if (totalOperasional === 0) {
+    throw new Error('Input operasional bulan ini terlebih dahulu sebelum menambah pemasukan');
+  }
+
+  // 3. Hitung pembagian
+  const pembagian = hitungPembagian(data.jumlah, totalOperasional);
+
+  if (pembagian.sisaSetelahOperasional <= 0) {
+    throw new Error(`Saldo tidak cukup setelah dipotong operasional. Operasional bulan ini: Rp ${totalOperasional.toLocaleString('id-ID')}`);
+  }
+
+  // 4. Buat batch write
+  const batch = writeBatch(db);
+
+  // 5. Simpan pemasukan
+  const pemasukanRef = doc(collection(db, 'pemasukan'));
+  
+  const pemasukanData: any = {
+    jumlah: data.jumlah,
+    sumber: data.sumber,
+    tanggal: Timestamp.fromDate(data.tanggal),
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
+  if (data.projectId) pemasukanData.projectId = data.projectId;
+  if (data.projectName) pemasukanData.projectName = data.projectName;
+  if (data.dariLainnya) pemasukanData.dariLainnya = data.dariLainnya;
+  if (data.keterangan) pemasukanData.keterangan = data.keterangan;
+
+  batch.set(pemasukanRef, pemasukanData);
+
+  // 6. Distribusi gaji ke 4 eksekutif
+  const executives: NamaEksekutif[] = ['Firdaus', 'Rafah', 'Faza', 'Haykal'];
+  
+  for (const nama of executives) {
+    const personalRef = doc(db, 'saldoPersonal', nama.toLowerCase());
+    const personalSnap = await getDoc(personalRef);
+    
+    const currentSaldo = personalSnap.exists() ? (personalSnap.data().saldo || 0) : 0;
+    const currentRiwayat = personalSnap.exists() ? (personalSnap.data().riwayat || []) : [];
+
+    const newRiwayat = {
+      id: crypto.randomUUID(),
+      tanggal: Timestamp.now(),
+      jumlah: pembagian.gajiPerOrang,
+      tipe: 'gaji',
+      keterangan: `Gaji dari ${data.sumber === 'Project' ? data.projectName : data.dariLainnya}`,
+    };
+
+    batch.set(personalRef, {
+      id: nama.toLowerCase(),
+      nama,
+      saldo: currentSaldo + pembagian.gajiPerOrang,
+      riwayat: [...currentRiwayat, newRiwayat],
+      createdAt: personalSnap.exists() ? personalSnap.data().createdAt : Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+  }
+
+  // 7. Tambah dana darurat
+  const daruratRef = doc(db, 'danaDarurat', 'main');
+  const daruratSnap = await getDoc(daruratRef);
+  
+  const currentDarurat = daruratSnap.exists() ? (daruratSnap.data().total || 0) : 0;
+  const daruratRiwayat = daruratSnap.exists() ? (daruratSnap.data().riwayat || []) : [];
+  const daruratTarget = daruratSnap.exists() ? (daruratSnap.data().target || 900000) : 900000;
+
+  const newDaruratRiwayat = {
+    id: crypto.randomUUID(),
+    tanggal: Timestamp.now(),
+    jumlah: pembagian.danaDarurat,
+    tipe: 'tambah',
+    keterangan: `Dari ${data.sumber === 'Project' ? data.projectName : data.dariLainnya}`,
+  };
+
+  batch.set(daruratRef, {
+    total: currentDarurat + pembagian.danaDarurat,
+    target: daruratTarget,
+    riwayat: [...daruratRiwayat, newDaruratRiwayat],
+  });
+
+  // 8. Tambah dana tabungan
+  const tabunganRef = doc(db, 'danaTabungan', 'main');
+  const tabunganSnap = await getDoc(tabunganRef);
+  
+  const currentTabungan = tabunganSnap.exists() ? (tabunganSnap.data().total || 0) : 0;
+  const tabunganRiwayat = tabunganSnap.exists() ? (tabunganSnap.data().riwayat || []) : [];
+
+  const newTabunganRiwayat = {
+    id: crypto.randomUUID(),
+    tanggal: Timestamp.now(),
+    jumlah: pembagian.danaTabungan,
+    tipe: 'tambah',
+    keterangan: `Dari ${data.sumber === 'Project' ? data.projectName : data.dariLainnya}`,
+  };
+
+  batch.set(tabunganRef, {
+    total: currentTabungan + pembagian.danaTabungan,
+    riwayat: [...tabunganRiwayat, newTabunganRiwayat],
+  });
+
+  // 9. Commit batch
+  await batch.commit();
+
+  // 10. Log
+  await createLog(
+    'Tambah',
+    'Pemasukan' as ObjekLog,
+    pemasukanRef.id,
+    `Pemasukan Rp ${data.jumlah.toLocaleString('id-ID')} → Operasional: Rp ${totalOperasional.toLocaleString('id-ID')}, Gaji: Rp ${pembagian.gajiEksekutif.toLocaleString('id-ID')}, Darurat: Rp ${pembagian.danaDarurat.toLocaleString('id-ID')}, Tabungan: Rp ${pembagian.danaTabungan.toLocaleString('id-ID')}`
+  );
+
+  return pemasukanRef.id;
+};
+
+// ==========================================
+// OPERASIONAL (TETAP SAMA)
+// ==========================================
+
+export const createOperasional = async (data: OperasionalInput): Promise<string> => {
+  const operasionalData = {
+    ...data,
+    tanggal: Timestamp.fromDate(data.tanggal),
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
+  const docRef = await addDoc(collection(db, 'operasional'), operasionalData);
+
+  await createLog(
+    'Tambah',
+    'Operasional' as ObjekLog,
+    docRef.id,
+    `Operasional ${data.jenisPengeluaran} Rp ${data.jumlah.toLocaleString('id-ID')}`
+  );
+
+  return docRef.id;
+};
+
+export const updateOperasional = async (id: string, data: Partial<OperasionalInput>): Promise<void> => {
+  const updateData: any = {
+    ...data,
+    updatedAt: Timestamp.now(),
+  };
+
+  if (data.tanggal) {
+    updateData.tanggal = Timestamp.fromDate(data.tanggal);
+  }
+
+  await updateDoc(doc(db, 'operasional', id), updateData);
+  await createLog('Edit', 'Operasional' as ObjekLog, id, `Edit operasional`);
+};
+
+export const deleteOperasional = async (id: string): Promise<void> => {
+  await deleteDoc(doc(db, 'operasional', id));
+  await createLog('Hapus', 'Operasional' as ObjekLog, id, 'Hapus operasional');
+};
+
+// ==========================================
+// TARIK SALDO PERSONAL (UPDATED)
+// ==========================================
+
+export const tarikSaldoPersonal = async (
+  nama: NamaEksekutif,
+  jumlah: number,
+  keterangan?: string
+): Promise<void> => {
+  const personalRef = doc(db, 'saldoPersonal', nama.toLowerCase());
+  const personalSnap = await getDoc(personalRef);
+
+  if (!personalSnap.exists()) {
+    throw new Error(`Saldo ${nama} tidak ditemukan`);
+  }
+
+  const currentSaldo = personalSnap.data().saldo || 0;
+
+  if (jumlah > currentSaldo) {
+    throw new Error(
+      `Saldo ${nama} tidak mencukupi. Saldo saat ini: Rp ${currentSaldo.toLocaleString('id-ID')}`
+    );
+  }
+
+  const currentRiwayat = personalSnap.data().riwayat || [];
+  const newRiwayat = {
+    id: crypto.randomUUID(),
+    tanggal: Timestamp.now(),
+    jumlah,
+    tipe: 'penarikan',
+    keterangan: keterangan || 'Penarikan saldo',
+  };
+
+  await updateDoc(personalRef, {
+    saldo: currentSaldo - jumlah,
+    riwayat: [...currentRiwayat, newRiwayat],
+    updatedAt: Timestamp.now(),
+  });
+
+  await createLog(
+    'Tarik',
+    'Saldo' as ObjekLog,
+    nama.toLowerCase(),
+    `${nama} menarik Rp ${jumlah.toLocaleString('id-ID')}`
+  );
+};
+
+// Alias untuk backward compatibility
+export const tarikSaldo = tarikSaldoPersonal;
+
+// ==========================================
+// TARIK DANA DARURAT (BARU)
+// ==========================================
+
+export const tarikDanaDarurat = async (jumlah: number, keterangan?: string): Promise<void> => {
+  const daruratRef = doc(db, 'danaDarurat', 'main');
+  const daruratSnap = await getDoc(daruratRef);
+
+  if (!daruratSnap.exists()) {
+    throw new Error('Dana Darurat tidak ditemukan');
+  }
+
+  const currentTotal = daruratSnap.data().total || 0;
+
+  if (jumlah > currentTotal) {
+    throw new Error(
+      `Dana Darurat tidak mencukupi. Saldo saat ini: Rp ${currentTotal.toLocaleString('id-ID')}`
+    );
+  }
+
+  const currentRiwayat = daruratSnap.data().riwayat || [];
+  const newRiwayat = {
+    id: crypto.randomUUID(),
+    tanggal: Timestamp.now(),
+    jumlah,
+    tipe: 'tarik',
+    keterangan: keterangan || 'Penarikan dana darurat',
+  };
+
+  await updateDoc(daruratRef, {
+    total: currentTotal - jumlah,
+    riwayat: [...currentRiwayat, newRiwayat],
+  });
+
+  await createLog(
+    'Tarik',
+    'Saldo' as ObjekLog,
+    'dana_darurat',
+    `Tarik Dana Darurat Rp ${jumlah.toLocaleString('id-ID')}`
+  );
+};
+
+// ==========================================
+// TARIK DANA TABUNGAN (BARU)
+// ==========================================
+
+export const tarikDanaTabungan = async (jumlah: number, keterangan?: string): Promise<void> => {
+  const tabunganRef = doc(db, 'danaTabungan', 'main');
+  const tabunganSnap = await getDoc(tabunganRef);
+
+  if (!tabunganSnap.exists()) {
+    throw new Error('Dana Tabungan tidak ditemukan');
+  }
+
+  const currentTotal = tabunganSnap.data().total || 0;
+
+  if (jumlah > currentTotal) {
+    throw new Error(
+      `Dana Tabungan tidak mencukupi. Saldo saat ini: Rp ${currentTotal.toLocaleString('id-ID')}`
+    );
+  }
+
+  const currentRiwayat = tabunganSnap.data().riwayat || [];
+  const newRiwayat = {
+    id: crypto.randomUUID(),
+    tanggal: Timestamp.now(),
+    jumlah,
+    tipe: 'tarik',
+    keterangan: keterangan || 'Penarikan dana tabungan',
+  };
+
+  await updateDoc(tabunganRef, {
+    total: currentTotal - jumlah,
+    riwayat: [...currentRiwayat, newRiwayat],
+  });
+
+  await createLog(
+    'Tarik',
+    'Saldo' as ObjekLog,
+    'dana_tabungan',
+    `Tarik Dana Tabungan Rp ${jumlah.toLocaleString('id-ID')}`
+  );
+};
+
+// ==========================================
+// UPDATE TARGET DANA DARURAT (BARU)
+// ==========================================
+
+export const updateTargetDanaDarurat = async (target: number): Promise<void> => {
+  const daruratRef = doc(db, 'danaDarurat', 'main');
+  const daruratSnap = await getDoc(daruratRef);
+
+  if (daruratSnap.exists()) {
+    await updateDoc(daruratRef, {
+      target,
+    });
+  } else {
+    await setDoc(daruratRef, {
+      total: 0,
+      target,
+      riwayat: [],
+    });
+  }
+
+  await createLog(
+    'Edit',
+    'Saldo' as ObjekLog,
+    'dana_darurat',
+    `Target Dana Darurat diubah jadi Rp ${target.toLocaleString('id-ID')}`
+  );
+};
+// Hapus pemasukan
+export const deletePemasukanById = async (id: string): Promise<void> => {
+  await deleteDoc(doc(db, 'pemasukan', id));
+  await createLog('Hapus', 'Pemasukan' as ObjekLog, id, 'Hapus pemasukan');
+};
+
+// Hapus operasional
+export const deleteOperasionalById = async (id: string): Promise<void> => {
+  await deleteDoc(doc(db, 'operasional', id));
+  await createLog('Hapus', 'Operasional' as ObjekLog, id, 'Hapus operasional');
+};
+
 
 // ============================================
 // LOG OPERATIONS
